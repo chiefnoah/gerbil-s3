@@ -4,6 +4,6 @@
 (import :std/build-script)
 
 (defbuild-script
-  '("aws/env"
-    "aws/sigv4"
-    "aws/s3"))
+  '("s3/env"
+    "s3/sigv4"
+    "s3/s3"))

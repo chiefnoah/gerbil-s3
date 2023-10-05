@@ -2,7 +2,7 @@
 ;;; (C) vyzo
 ;;; AWS sigv4 request signatures
 (import "env"
-        :gerbil/gambit/bytes
+        :std/misc/bytes
         :std/srfi/13
         :std/crypto/digest
         :std/crypto/hmac
