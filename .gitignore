@@ -10,3 +10,5 @@ lib
 
 src/std/build-deps
 src/gerbil/runtime/gx-version.scm
+TAGS
+build-deps

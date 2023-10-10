@@ -1,13 +1,13 @@
 ;;; -*- Gerbil -*-
 ;;; (C) vyzo
 ;;; AWS sigv4 request signatures
-(import "env"
-        :std/misc/bytes
+(import :std/misc/bytes
         :std/srfi/13
         :std/crypto/digest
         :std/crypto/hmac
         :std/text/hex
         :std/net/uri
+        :std/contract
         :std/sort)
 (export aws4-canonical-request aws4-sign aws4-auth)
 
@@ -33,16 +33,16 @@
 ;; scope is the request scope: string in the form yyyymmdd/region/service
 ;; ts is the request timestamp string
 ;; request is a the canonical request string
-(def (aws4-sign scope request-str ts)
-  (let ((key (signing-key scope))
+(def (aws4-sign scope request-str ts secret-key)
+  (let ((key (signing-key scope secret-key))
         (str (string-to-sign scope request-str ts)))
     (hmac-sha256 key (string->bytes str))))
 
 ;; Calcuate the authorization header
-(def (aws4-auth scope request-str ts headers)
-  (let (sig (aws4-sign scope request-str ts))
+(def (aws4-auth scope request-str ts headers secret-key access-key)
+  (let (sig (aws4-sign scope request-str ts secret-key))
     (string-append "AWS4-HMAC-SHA256 "
-                   "Credential=" (aws-access-key) "/" scope "/aws4_request,"
+                   "Credential=" access-key "/" scope "/aws4_request,"
                    "SignedHeaders=" (signed-headers headers) ","
                    "Signature=" (hex-encode sig))))
 
@@ -80,13 +80,13 @@
          string<?)
    ";"))
 
-(def (signing-key scope)
+(def (signing-key scope secret-key)
   ;; TODO cache signing keys
   (match (string-split scope #\/)
     ([date region service]
      (let* ((date-key
              (hmac-sha256 (string->bytes
-                           (string-append "AWS4" (aws-secret-key)))
+                           (string-append "AWS4" secret-key))
                           (string->bytes date)))
             (date-region-key
              (hmac-sha256 date-key
