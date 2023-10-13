@@ -40,14 +40,16 @@
     (using (self self :- s3-client)
            (let* ((req {self.request verb: 'GET})
                   (xml (s3-parse-xml req))
-                  (buckets (sxml-select xml (sxml-e? 's3:Bucket)))
+                  (buckets (sxml-select xml (sxml-e? 's3:ListBucketResult) cadr))
                   (buckets (chain buckets
-                                  (sxml-find <> (sxml-e? 's3:Name) cadr)
-                                  (make-bucket self <> self.region))))
+                                  (display <>)
+                                  ; I'm not sure why sxml-find isn't working, it should?
+                                  #;(sxml-find <> (sxml-e? 's3:Name))
+                                  (cadar <>)
+                                  (make-bucket self <> (s3-client-region self)))))
+             ; buckets is #f if none are returned
              (request-close req)
              buckets))))
-#;(def client (make-s3-client "localhost:8000" "access-key" "secret-key"))
-#;{list-buckets client}
 
 ;; NOTE: all bucket operations need the correct region for the bucket or they will 400
 #;(defmethod {create-bucket! s3-client}
