@@ -3,6 +3,7 @@
 ;;; AWS S3 client
 (import "sigv4"
         :std/net/request
+        :std/misc/func
         :std/contract
         :std/net/uri
         :std/crypto/digest
@@ -11,7 +12,7 @@
         :std/error
         :std/sugar
         :std/srfi/19)
-(export (struct-out s3-client bucket) S3ClientException)
+(export (struct-out s3-client bucket) S3ClientError)
 
 ; We're just supporting Amazon Signature v4.
 
@@ -20,7 +21,14 @@
   final: #t
   constructor: :init!)
 
-(defalias S3ClientException RuntimeException)
+(defstruct bucket (client name region)
+  final: #t)
+
+(defclass (S3ClientError Error) ()
+  final: #t)
+
+(defraise/context (raise-s3-error where message irritants ...)
+  (S3ClientError message irritants: [irritants ...]))
 
 ; Initializes a `s3-client`. Primarily responsible for holding onto credentials
 (defmethod {:init! s3-client}
@@ -29,16 +37,17 @@
             (access-key (getenv "AWS_ACCESS_KEY_ID" #f))
             (secret-key (getenv "AWS_SECRET_ACCESS_KEY" #f))
             (region (getenv "AWS_DEFAULT_REGION" "us-east-1")))
-    (using (self self :- s3-client)
+    (using (self self : s3-client)
       (set! self.endpoint endpoint)
       (set! self.access-key access-key)
       (set! self.secret-key secret-key)
       (set! self.region region))))
 
-(defmethod {list-buckets s3-client}
+; Retrieves buckets accessible to this client.
+(defmethod {list-buckets s3-client} ; => (list : bucket)
   (lambda (self)
-    (using (self self :- s3-client)
-           (let* ((req {self.request verb: 'GET})
+    (using (self self : s3-client)
+           (let* ((req (s3-request/error self verb: 'GET))
                   (xml (s3-parse-xml req))
                   (buckets (sxml-find xml (sxml-e? 's3:Buckets) sxml-children))
                   (names (map (chain <>
@@ -51,33 +60,88 @@
            names))))
 
 ;; NOTE: all bucket operations need the correct region for the bucket or they will 400
-#;(defmethod {create-bucket! s3-client}
-  (lambda (bucket)
-    (using (self self :- s3-client)
-      (let (req (s3-request/error verb: 'PUT bucket: bucket))
+(defmethod {create-bucket! s3-client}
+  (lambda (self bucket)
+    (using (self self : s3-client)
+      (let* ((req (s3-request/error self verb: 'PUT bucket: bucket))
+            #;(xml (s3-parse-xml req)))
         (request-close req)
         (void)))))
 
-(defstruct bucket (client name region)
-  final: #t)
+(defmethod {get-bucket s3-client}
+  (lambda (self bucket-name)
+    (using (self self : s3-client)
+      (if {bucket-exists? self bucket-name}
+        (make-bucket self bucket-name self.region)
+        #f))))
 
-#;(defmethod {delete-bucket! s3-client}
-  (lambda (self b)
-    (using ((self self :- s3-client)
-            (b b :- bucket))
-      (let (req (s3-request/error verb: 'DELETE bucket: b))
-        (request-close req)
-        (void)))))
+; Delete a bucket by name
+(defmethod {delete-bucket! s3-client}
+  (lambda (self bucket)
+    (using ((self self : s3-client)
+            (bucket bucket :~ string?))
+           (when {bucket-exists? self bucket}
+             (let (req (s3-request/error self verb: 'DELETE bucket: bucket))
+               (request-close req)
+               (void))))))
 
-#;(defmethod {list-objects bucket}
+(defmethod {bucket-exists? s3-client}
+  (lambda (self bucket)
+    (using (self self : s3-client)
+           (let* ((bucket (if (bucket? bucket) (bucket-name bucket) bucket))
+                  (req {self.request verb: 'HEAD bucket: bucket})
+                  (code (request-status req)))
+             ; 200 and 404 are expected codes
+             ; we explicitly handle 404 so we get proper predicate
+             ; semantics and don't raise on what would otherwise be
+             ; #f condition.
+             (if (member code [200 404]) 
+               (begin
+                 (request-close req)
+                 (= code 200))
+               (with-request-error req))))))
+
+(defmethod {bucket s3-client}
+  (lambda (self name)
+    (using (self self : s3-client)
+      (if {bucket-exists? self name}
+        (make-bucket self name (s3-client-region self))
+        #f))))
+
+; Lists the objects stored within the bucket
+(defmethod {list-objects bucket}
   (lambda (self)
-    (using (self self :- bucket)
-           (let* ((req (s3-request/error verb: 'GET bucket: self))
+    (using ((self self : bucket)
+            (client (bucket-client self) : s3-client))
+           (let* ((name (bucket-name self))
+                  (req (s3-request/error client verb: 'GET bucket: name))
                   (xml (s3-parse-xml req))
                   (keys (sxml-select xml (sxml-e? 's3:Key) cadr)))
              (request-close req)
              keys))))
 
+(defmethod {get bucket}
+  (lambda (self key)
+    (using ((self self : bucket)
+            (key :~ string?)
+            (client (bucket-client self) : s3-client))
+      (let* ((req (s3-request/error client verb: 'GET bucket: (bucket-name self)
+                                    path: (string-append "/" key)))
+             (data (request-content req)))
+        (request-close req)
+        data))))
+
+(defmethod {put! bucket}
+  (lambda (self key data content-type: (content-type "binary/octet-stream"))
+    (using ((self self : bucket)
+            (key :? string?)
+            (client (bucket-client self) : s3-client))
+           (let* (req (s3-request/error client verb: 'PUT bucket: (bucket-name bucket)
+                                        path: (string-append "/" key)
+                                        body: data
+                                        content-type: content-type))
+             (request-close req)
+             (void))))
 
 #;(def (s3-get bucket key)
   (let* ((req (s3-request/error verb: 'GET bucket: bucket
@@ -109,7 +173,7 @@
             query:  (query #f)
             body:   (body #f)
             content-type: (content-type #f)) ; must be specified if body is specified
-    (using (self self :- s3-client)
+    (using (self self : s3-client)
            (let* ((now (current-date))
                   (ts (date->string now "~Y~m~dT~H~M~SZ"))
                   (scopets (date->string now "~Y~m~d"))
@@ -146,19 +210,20 @@
 
 (defrule (s3-request/error self ...)
          (with-request-error
-           (s3-client::s3-request self ...)))
+           {request self ...}))
 
 (def (s3-parse-xml req)
      (read-xml (request-content req)
                namespaces: '(("http://s3.amazonaws.com/doc/2006-03-01/" . "s3"))))
 
 (def (with-request-error req)
-  (if (and (fx>= (request-status req) 200)
-           (fx< (request-status req) 300))
-    req
-    ;; TODO: proper exception
-    (begin
-      (request-close req)
-      (error "AWS request error"
-        (request-status req)
-        (request-status-text req)))))
+     (using (req :~ request?)
+            (if (and (fx>= (request-status req) 200)
+                     (fx< (request-status req) 300))
+              req
+              ;; TODO: proper exception
+              (begin
+                (request-close req)
+                (raise-s3-error
+                  (request-status req)
+                  (request-status-text req))))))
