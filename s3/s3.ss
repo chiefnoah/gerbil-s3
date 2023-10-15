@@ -14,9 +14,6 @@
         :std/srfi/19)
 (export (struct-out s3-client bucket) S3ClientError)
 
-; We're just supporting Amazon Signature v4.
-
-; TODO: define more struct fields
 (defstruct s3-client (endpoint access-key secret-key region)
   final: #t
   constructor: :init!)
@@ -68,7 +65,8 @@
         (request-close req)
         (void)))))
 
-(defmethod {get-bucket s3-client}
+; Gets a bucket struct that can be used to fetch objects.
+(defmethod {get-bucket s3-client} ; => bucket
   (lambda (self bucket-name)
     (using (self self : s3-client)
       (if {bucket-exists? self bucket-name}
@@ -95,7 +93,7 @@
              ; we explicitly handle 404 so we get proper predicate
              ; semantics and don't raise on what would otherwise be
              ; #f condition.
-             (if (member code [200 404]) 
+             (if (memv code [200 404]) 
                (begin
                  (request-close req)
                  (= code 200))
@@ -134,36 +132,24 @@
 (defmethod {put! bucket}
   (lambda (self key data content-type: (content-type "binary/octet-stream"))
     (using ((self self : bucket)
-            (key :? string?)
+            (key :~ string?)
             (client (bucket-client self) : s3-client))
-           (let* (req (s3-request/error client verb: 'PUT bucket: (bucket-name bucket)
-                                        path: (string-append "/" key)
-                                        body: data
-                                        content-type: content-type))
+           (let (req (s3-request/error client verb: 'PUT bucket: (bucket-name self)
+                                       path: (string-append "/" key)
+                                       body: data
+                                       content-type: content-type))
              (request-close req)
-             (void))))
+             (void)))))
 
-#;(def (s3-get bucket key)
-  (let* ((req (s3-request/error verb: 'GET bucket: bucket
-                                path: (string-append "/" key)))
-         (data (request-content req)))
-    (request-close req)
-    data))
-
-#;(def (s3-put! bucket key data
-              content-type: (content-type "binary/octet-stream"))
-  (let (req (s3-request/error verb: 'PUT bucket: bucket
-                              path: (string-append "/" key)
-                              body: data
-                              content-type: content-type))
-    (request-close req)
-    (void)))
-
-#;(def (s3-delete! bucket key)
-  (let (req (s3-request/error verb: 'DELETE bucket: bucket
-                              path: (string-append "/" key)))
-    (request-close req)
-    (void)))
+(defmethod {delete! bucket}
+  (lambda (self key)
+    (using ((self : bucket)
+            (key :~ string?)
+            (client (bucket-client self) : s3-client))
+           (let (req (s3-request/error client verb: 'DELETE bucket: (bucket-name self)
+                     path: (string-append "/" key)))
+             (request-close req)
+             (void)))))
 
 (defmethod {request s3-client}
   (lambda (self
@@ -209,21 +195,20 @@
                  (error "Bad request verb" verb)))))))
 
 (defrule (s3-request/error self ...)
-         (with-request-error
-           {request self ...}))
+  (with-request-error
+   {request self ...}))
 
 (def (s3-parse-xml req)
-     (read-xml (request-content req)
-               namespaces: '(("http://s3.amazonaws.com/doc/2006-03-01/" . "s3"))))
+  (read-xml (request-content req)
+           namespaces: '(("http://s3.amazonaws.com/doc/2006-03-01/" . "s3"))))
 
 (def (with-request-error req)
-     (using (req :~ request?)
-            (if (and (fx>= (request-status req) 200)
-                     (fx< (request-status req) 300))
-              req
-              ;; TODO: proper exception
-              (begin
-                (request-close req)
-                (raise-s3-error
-                  (request-status req)
-                  (request-status-text req))))))
+  (using (req :~ request?)
+        (if (and (fx>= (request-status req) 200)
+                 (fx< (request-status req) 300))
+          req
+          (begin
+            (request-close req)
+            (raise-s3-error
+              (request-status req)
+              (request-status-text req))))))
