@@ -21,8 +21,7 @@
 (defstruct bucket (client name region)
   final: #t)
 
-(defclass (S3ClientError Error) ()
-  final: #t)
+(deferror-class (S3ClientError Error) () s3-client-error?)
 
 (defraise/context (raise-s3-error where message irritants ...)
   (S3ClientError message irritants: [irritants ...]))
@@ -60,8 +59,7 @@
 (defmethod {create-bucket! s3-client}
   (lambda (self bucket)
     (using (self self : s3-client)
-      (let* ((req (s3-request/error self verb: 'PUT bucket: bucket))
-            #;(xml (s3-parse-xml req)))
+      (let (req (s3-request/error self verb: 'PUT bucket: bucket))
         (request-close req)
         (void)))))
 
@@ -151,6 +149,29 @@
              (request-close req)
              (void)))))
 
+(defmethod {copy-to! bucket}
+  (lambda (self src-bucket src dest)
+    (using ((self : bucket)
+            (client (bucket-client self) : s3-client)
+            ; a bucket instance pointing to the intended source bucket
+            (src-bucket : bucket)
+            ; the source file name
+            (src :~ string?)
+            ; the destination file name
+            (dest :~ string?))
+           (let* ((src-ident (string-append (bucket-name src-bucket) "/" src))
+                  (headers [["x-amz-copy-source" :: src-ident]])
+                  (req (s3-request/error client
+                                         verb: 'PUT
+                                         bucket: (bucket-name self)
+                                         path: (string-append "/" dest)
+                                         extra-headers: headers)))
+             (request-close req)
+             (void)))))
+
+
+; The core request method. Handles AWS Sig. v4, auth, and calls correct http- function based on
+; `verb`.
 (defmethod {request s3-client}
   (lambda (self
             verb:   (verb 'GET)
@@ -158,6 +179,8 @@
             path:   (path "/")
             query:  (query #f)
             body:   (body #f)
+            ; optional extra headers
+            extra-headers: (extra-headers #f)
             content-type: (content-type #f)) ; must be specified if body is specified
     (using (self self : s3-client)
            (let* ((now (current-date))
@@ -171,7 +194,8 @@
                   (headers [["Host" :: (string-append host ":443")]
                             ["x-amz-date" :: ts]
                             ["x-amz-content-sha256" :: (hex-encode hash)]
-                            (if body [["Content-Type" :: content-type]] []) ...])
+                            (if body [["Content-Type" :: content-type]] []) ...
+                            (if extra-headers extra-headers []) ...])
                   (creq (aws4-canonical-request
                           verb: verb
                           uri: path
