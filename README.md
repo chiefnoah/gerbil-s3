@@ -1,5 +1,9 @@
 # Gerbil AWS
 
+[!IMPORTANT]
+> This package is deprecated and it's functionality moved into the Gerbil standard
+library
+
 AWS client libraries for Gerbil Scheme.
 
 ## License
